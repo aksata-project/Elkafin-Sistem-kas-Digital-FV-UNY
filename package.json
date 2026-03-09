@@ -1,0 +1,23 @@
+{
+  "name": "elka-financial-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "tailwindcss": "^4.0.0"
+  },
+  "dependencies": {
+    "firebase": "^10.12.2",
+    "jspdf": "^2.5.1",
+    "jspdf-autotable": "^3.5.23",
+    "xlsx": "^0.18.5",
+    "chart.js": "^4.4.2"
+  }
+}
