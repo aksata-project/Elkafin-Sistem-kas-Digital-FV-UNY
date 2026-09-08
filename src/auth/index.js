@@ -1,5 +1,5 @@
 import { onAuthStateChanged, signInWithPopup, signOut as fbSignOut } from 'firebase/auth';
-import { collection, doc, setDoc, getDoc, getDocs, onSnapshot, query, orderBy, writeBatch } from 'firebase/firestore';
+import { collection, doc, setDoc, getDoc, getDocs, onSnapshot, query, orderBy, limit, writeBatch } from 'firebase/firestore';
 import { auth, db, provider } from '../firebase/config.js';
 import {
     state,
@@ -11,6 +11,7 @@ import {
     isInitialLoad
 } from '../store/state.js';
 import { buildTransactionIndex } from '../data/transactionIndex.js';
+import { fetchQrisConfig } from '../data/qris.js';
 import {
     renderAnnouncement,
     renderDashboardSummary,
@@ -19,7 +20,12 @@ import {
     renderExpenses,
     renderArchiveView,
     renderAdminView,
-    renderRekapitulasiPemasukan
+    renderRekapitulasiPemasukan,
+    renderWeekManagement,
+    renderEventViews,
+    renderEventsSummaryInAdmin,
+    renderArchivedEvents,
+    renderKegiatanHub
 } from '../ui/render.js';
 import { populateClassFilter, populateWeekFilter } from '../ui/render.js';
 import { setupUI } from '../ui/navigation.js';
@@ -65,6 +71,7 @@ export function setupAuthListeners(callbacks) {
                 if (bottomNav) bottomNav.classList.remove('hidden');
 
                 await initializeDatabaseIfNeeded();
+                await fetchQrisConfig();
                 setupRealtimeDataListeners(callbacks);
             } else {
                 setCurrentUser(null);
@@ -182,8 +189,9 @@ async function initializeDatabaseIfNeeded() {
     try {
         const configSnapshot = await getDocs(collection(db, 'internal_config'));
         if (configSnapshot.empty) {
-            await setDoc(doc(db, 'internal_config', 'weeks'), { manualMaxWeek: 1 });
-            await setDoc(doc(db, 'internal_config', 'current_semester'), { startWeek: 17 });
+            // Initialize with default semester config (admin will fill in startDate)
+            await setDoc(doc(db, 'internal_config', 'semester'), { label: '', startDate: null, weeklyAmount: 2000 });
+            await setDoc(doc(db, 'internal_config', 'carry_over'), { teori_c: 0, teori_d: 0, angkatan: 0 });
             console.log('Database initialized with default config.');
         }
     } catch (e) {
@@ -194,12 +202,16 @@ async function initializeDatabaseIfNeeded() {
 function setupRealtimeDataListeners(callbacks) {
     // 1. Students Listener
     const u1 = onSnapshot(collection(db, 'students'), (snapshot) => {
-        state.allStudents = snapshot.docs.map(doc => ({ nim: doc.id, ...doc.data() }));
+        const allDocs = snapshot.docs.map(doc => ({ nim: doc.id, ...doc.data() }));
+        // Separate active and inactive students
+        state.allStudents = allDocs.filter(s => s.status !== 'inactive');
+        state.inactiveStudents = allDocs.filter(s => s.status === 'inactive');
         
         const ADMIN_EMAIL = 'muhammadilham.2025@student.uny.ac.id'.toLowerCase();
         const isMainAdmin = currentUser?.email?.toLowerCase() === ADMIN_EMAIL;
         
-        const match = state.allStudents.find(s => s.email === currentUser?.email);
+        // Check among ALL students (including inactive) for login matching
+        const match = allDocs.find(s => s.email === currentUser?.email && s.status !== 'inactive');
         
         if (userData) {
             if (isMainAdmin) {
@@ -269,7 +281,7 @@ function setupRealtimeDataListeners(callbacks) {
         if (userData && (isMainAdmin || userData.nim)) {
             setupUI(userData, callbacks);
             if (userData.role === 'bendahara_angkatan' || userData.role === 'bendahara_teori') {
-                renderArchiveView(userData, callbacks.onMonthlyExport, callbacks.adminCallbacks);
+                renderArchiveView(userData, callbacks.onSemesterExport);
             }
             if (userData.role === 'bendahara_angkatan') {
                 renderAdminView(userData, callbacks.adminCallbacks);
@@ -312,18 +324,7 @@ function setupRealtimeDataListeners(callbacks) {
         if (!isInitialLoad) showToast('success', 'Data pengeluaran telah diperbarui.', 2000);
     });
 
-    // 5. Config Listener
-    const u5 = onSnapshot(doc(db, 'internal_config', 'weeks'), (docSnap) => {
-        if (docSnap.exists()) {
-            state.manualMaxWeek = docSnap.data().manualMaxWeek || 1;
-            populateWeekFilter();
-            
-            if (userData && userData.nim) {
-                renderMyPaymentStatus(userData);
-                renderTrenMingguan();
-            }
-        }
-    });
+    // 5. (Removed — manualMaxWeek now auto-calculated from semester startDate)
 
     const u6 = onSnapshot(collection(db, 'announcements'), (snapshot) => {
         if (!snapshot.empty) {
@@ -344,6 +345,37 @@ function setupRealtimeDataListeners(callbacks) {
         }
     });
 
+    // 7b. Semester Config Listener (central config — drives week calculation)
+    const u9 = onSnapshot(doc(db, 'internal_config', 'semester'), (docSnap) => {
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            state.semester = {
+                label: data.label || '',
+                startDate: data.startDate || null,
+                weeklyAmount: data.weeklyAmount || 2000,
+                manualMaxWeek: data.manualMaxWeek ?? null,
+            };
+            // Re-populate week filter and re-render week management UI
+            populateWeekFilter();
+            renderWeekManagement();
+            // Re-render all affected views
+            if (userData && userData.nim) {
+                renderDashboardSummary();
+                renderMyPaymentStatus(userData);
+                renderKasAngkatan(userData);
+                renderRekapitulasiPemasukan();
+                renderTrenMingguan();
+                // Re-render admin & archive views (billing dropdowns + semester info)
+                if (userData.role === 'bendahara_angkatan') {
+                    renderAdminView(userData, callbacks.adminCallbacks);
+                }
+                if (userData.role === 'bendahara_angkatan' || userData.role === 'bendahara_teori') {
+                    renderArchiveView(userData, callbacks.onSemesterExport);
+                }
+            }
+        }
+    });
+
     // 8. Warnings Listener
     const u8 = onSnapshot(collection(db, 'warnings'), (snapshot) => {
         state.warnings = {};
@@ -358,7 +390,57 @@ function setupRealtimeDataListeners(callbacks) {
         }
     });
 
-    setUnsubscribers([u1, u2, u3, u4, u5, u6, u7, u8]);
+    // 9. Events Listener (Tabungan Kegiatan)
+    const u10 = onSnapshot(collection(db, 'events'), (snapshot) => {
+        state.events = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (userData && userData.nim) {
+            // Re-render sidebar to inject/remove event nav links
+            setupUI(userData, callbacks);
+            // Ensure dynamic view containers exist and render
+            renderEventViews(userData);
+            // Update admin widget
+            if (userData.role === 'bendahara_angkatan') {
+                renderEventsSummaryInAdmin(userData);
+            }
+            // Update archive view with archived events
+            if (userData.role === 'bendahara_angkatan' || userData.role === 'bendahara_teori') {
+                renderArchivedEvents();
+            }
+            renderKegiatanHub(userData);
+        }
+    });
+
+    // 10. Event Payments Listener
+    const u11 = onSnapshot(collection(db, 'event_payments'), (snapshot) => {
+        state.eventPayments = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (userData && userData.nim) {
+            // Re-render all active event views
+            renderEventViews(userData);
+            // Update admin event widget
+            if (userData.role === 'bendahara_angkatan') {
+                renderEventsSummaryInAdmin(userData);
+            }
+            renderKegiatanHub(userData);
+        }
+    });
+
+    // 11. Activity Logs Listener (Limit 100)
+    const qLogs = query(collection(db, 'activity_logs'), orderBy('timestamp', 'desc'), limit(100));
+    const u12 = onSnapshot(qLogs, (snapshot) => {
+        // Reverse so that newer might be inserted at top if we want, but array usually sorted by desc
+        state.activityLogs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        
+        if (userData) {
+            // Import and re-render the log interface conditionally
+            import('../ui/render.js').then(m => {
+                if (typeof m.renderActivityLogView === 'function') {
+                    m.renderActivityLogView();
+                }
+            });
+        }
+    });
+
+    setUnsubscribers([u1, u2, u3, u4, u6, u7, u8, u9, u10, u11, u12]);
 
     setTimeout(() => { setIsInitialLoad(false); }, 1500);
 }

@@ -3,6 +3,7 @@ import { db } from '../firebase/config.js';
 import { state } from '../store/state.js';
 import { showAlert, showToast, showConfirm } from '../utils/toast.js';
 import { findStudentByNim } from '../ui/navigation.js';
+import { logActivity } from '../utils/logger.js';
 
 /**
  * Handle submitting the add expense form.
@@ -21,7 +22,11 @@ export async function handleAddExpense(e, currentUser, userData) {
     let incomeD = state.carryOver.teori_d || 0;
     const carryOverAngkatan = state.carryOver.angkatan || 0;
 
+    // Build inactive NIM set for exclusion
+    const inactiveNims = new Set(state.inactiveStudents.map(s => s.nim));
+
     state.kasTransactions.forEach(p => {
+        if (inactiveNims.has(p.nim)) return;
         const student = findStudentByNim(p.nim);
         if (student) {
             if (student.theoryClass === 'C') incomeC += p.amount;
@@ -58,6 +63,7 @@ export async function handleAddExpense(e, currentUser, userData) {
             recordedByName: userData.displayName,
             timestamp: serverTimestamp()
         });
+        await logActivity('CREATE', 'PENGELUARAN', `Mencatat pengeluaran ${category} sebesar Rp ${amount.toLocaleString('id-ID')} untuk: ${formData.get('description')}`, amount);
         document.getElementById('kas-expense-modal').classList.add('hidden');
         showToast('success', 'Data pengeluaran berhasil disimpan.');
     } catch (error) {
@@ -76,7 +82,11 @@ export async function handleDeleteExpense(e) {
     const confirmed = await showConfirm('Konfirmasi Hapus', 'Anda yakin ingin menghapus data pengeluaran ini? Tindakan ini tidak dapat diurungkan.');
     if (confirmed) {
         try {
+            const expense = state.kasExpenses.find(e => e.id === expenseId);
             await deleteDoc(doc(db, 'kas_expenses', expenseId));
+            if(expense) {
+                await logActivity('DELETE', 'PENGELUARAN', `Menghapus data pengeluaran ${expense.category}: ${expense.description}`);
+            }
             showToast('success', 'Data pengeluaran telah dihapus.');
         } catch (error) {
             showAlert('error', 'Gagal', 'Gagal menghapus data pengeluaran.');

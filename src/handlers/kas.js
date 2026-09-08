@@ -2,6 +2,7 @@ import { collection, addDoc, doc, writeBatch, updateDoc, deleteDoc, serverTimest
 import { db } from '../firebase/config.js';
 import { state, getWeeklyTarget } from '../store/state.js';
 import { showAlert, showToast } from '../utils/toast.js';
+import { logActivity } from '../utils/logger.js';
 
 /**
  * Handle quick-pay (instant cash payment for current week).
@@ -26,6 +27,7 @@ export async function handleQuickPay(e, currentUser, userData) {
             recordedByName: userData.displayName,
             timestamp: serverTimestamp()
         });
+        await logActivity('CREATE', 'KAS', `Menerima uang kas (Cepat) dari ${nim} untuk Minggu ${week}`, amount);
         showToast('success', 'Pembayaran kas berhasil dicatat.');
     } catch (error) {
         showAlert('error', 'Gagal', `Gagal mencatat Quick Pay: ${error.message}`);
@@ -75,6 +77,7 @@ export async function handleAddKas(e, currentUser, userData) {
             currentWeek++;
         }
         await batch.commit();
+        await logActivity('CREATE', 'KAS', `Menerima setoran kas sebesar Rp ${parseInt(formData.get('amount')).toLocaleString('id-ID')} dari ${nim}`, parseInt(formData.get('amount')));
         document.getElementById('kas-input-modal').classList.add('hidden');
         showToast('success', 'Setoran kas berhasil dicatat.');
     } catch (error) {
@@ -112,10 +115,12 @@ export async function handleUpdateKas(e) {
         if (newAmount === 0) {
             // Jika nominal disetel ke 0, hapus transaksi tersebut secara otomatis
             await deleteDoc(doc(db, 'kas_transactions', transactionId));
+            await logActivity('DELETE', 'KAS', `Menghapus transaksi kas milik ${transaction.nim} pada Minggu ${transaction.week}`);
             showToast('success', 'Transaksi telah dihapus (nominal 0).');
         } else {
             // Jika nominal > 0, perbarui nilai transaksi
             await updateDoc(doc(db, 'kas_transactions', transactionId), { amount: newAmount });
+            await logActivity('UPDATE', 'KAS', `Mengubah setoran kas milik ${transaction.nim} pada Minggu ${transaction.week} menjadi Rp ${newAmount.toLocaleString('id-ID')}`, newAmount);
             showToast('success', 'Setoran kas telah diperbarui.');
         }
         
@@ -128,40 +133,4 @@ export async function handleUpdateKas(e) {
     }
 }
 
-/**
- * Handle adding or removing a manual week.
- */
-export async function handleAddManualWeek() {
-    try {
-        const { doc: firestoreDoc, setDoc } = await import('firebase/firestore');
-        const newMaxWeek = state.manualMaxWeek + 1;
-        await setDoc(firestoreDoc(db, 'internal_config', 'weeks'), { manualMaxWeek: newMaxWeek });
-        showToast('success', `Minggu ke-${newMaxWeek} telah ditambahkan.`);
-    } catch (error) {
-        showAlert('error', 'Gagal', 'Gagal menambahkan minggu baru.');
-    }
-}
-
-export async function handleRemoveManualWeek() {
-    const newMaxWeek = state.manualMaxWeek - 1;
-    if (newMaxWeek < state.currentWeek) {
-        showAlert('error', 'Gagal', `Tidak dapat mengurangi minggu menjadi lebih kecil dari minggu saat ini (Minggu ke-${state.currentWeek}).`);
-        return;
-    }
-    if (newMaxWeek < 1) {
-        showAlert('error', 'Gagal', 'Tidak dapat mengurangi minggu di bawah 1.');
-        return;
-    }
-    try {
-        const { doc: firestoreDoc, setDoc } = await import('firebase/firestore');
-        await setDoc(firestoreDoc(db, 'internal_config', 'weeks'), { manualMaxWeek: newMaxWeek });
-        showToast('success', `Minggu pembayaran dikurangi menjadi ${newMaxWeek} minggu.`);
-
-        const weekFilter = document.getElementById('kas-filter-week');
-        if (parseInt(weekFilter.value) > newMaxWeek) {
-            weekFilter.value = newMaxWeek;
-        }
-    } catch (error) {
-        showAlert('error', 'Gagal', 'Gagal mengurangi minggu.');
-    }
-}
+// Manual week handlers removed — weeks are now auto-calculated from semester.startDate
